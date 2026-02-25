@@ -6,13 +6,33 @@ Imports iTextSharp.text.pdf
 Namespace AdobeUtilsNS
     <System.Runtime.Versioning.SupportedOSPlatform("windows")>
     Public Class AdobeUtils
-        Private ReadOnly pAttachments As List(Of Object)
+        Private ReadOnly pAttachments As List(Of AttachmentModel)
 
-        Public Sub New(Optional attList As List(Of Object) = Nothing)
+        Public Sub New(Optional attList As List(Of AttachmentModel) = Nothing)
             If attList Is Nothing Then
-                pAttachments = New List(Of Object)
+                pAttachments = New List(Of AttachmentModel)
             Else
                 pAttachments = attList
+            End If
+        End Sub
+
+        ''' <summary>
+        ''' Modifies XFA form fields/tables from XML data, then embeds attachments into the output PDF.
+        ''' Does NOT open Adobe or wait for signature.
+        ''' </summary>
+        ''' <param name="inputPdfPath">Source PDF template path (must be XFA form)</param>
+        ''' <param name="outputPdfPath">Output PDF path</param>
+        ''' <param name="dataXMLPath">XML data file path (fields + tables, without Attachments node)</param>
+        Public Sub ProcessXfa(inputPdfPath As String, outputPdfPath As String, dataXMLPath As String)
+            ' Step 1: Modify XFA
+            Dim rsp = ModifyXfaFromXml(inputPdfPath, outputPdfPath, dataXMLPath)
+            If rsp <> "OK" Then
+                Throw New Exception(rsp)
+            End If
+
+            ' Step 2: Embed attachments (in same file)
+            If Not AddAttachmentsInPlace(outputPdfPath, pAttachments) Then
+                Throw New Exception("Eroare la adăugarea atașamentelor în PDF.")
             End If
         End Sub
 
@@ -21,7 +41,7 @@ Namespace AdobeUtilsNS
         ''' </summary>
         ''' <param name="inputPdfPath">Source PDF path (must be XFA form)</param>
         ''' <param name="outputPdfPath">Output PDF path after XFA modification</param>
-        ''' <param name="configJson">JSON configuration with fields and tables to modify</param>
+        ''' <param name="dataXMLPath">XML data file path</param>
         ''' <returns>True if PDF was signed and saved, False otherwise</returns>
         Public Function ProcessAndVerifySignature(inputPdfPath As String, outputPdfPath As String, dataXMLPath As String) As Boolean
             ' Step 1: Modify XFA
@@ -53,8 +73,7 @@ Namespace AdobeUtilsNS
         ''' <returns></returns>
         Private Shared Function ModifyXfaFromXml(inputPdfPath As String, outputPdfPath As String, configXmlPath As String) As String
             Dim reader As New PdfReader(inputPdfPath)
-            Dim stamper As New PdfStamper(reader, New FileStream(outputPdfPath, FileMode.Create))
-
+            Dim stamper As New PdfStamper(reader, New FileStream(outputPdfPath, FileMode.Create), "\0", True)
             Try
                 Dim xfaForm As XfaForm = stamper.AcroFields.Xfa
                 Dim domDoc As System.Xml.XmlDocument = xfaForm.DomDocument
@@ -94,10 +113,10 @@ Namespace AdobeUtilsNS
 
                 If pdfTableNode IsNot Nothing Then
                     ' Remove existing rows (keep header/footer)
-                    'Dim existingRows = pdfTableNode.SelectNodes("Row1")
-                    'For Each row In existingRows
-                    '    pdfTableNode.RemoveChild(row)
-                    'Next
+                    Dim existingRows = pdfTableNode.SelectNodes("Row1")
+                    For Each row In existingRows
+                        pdfTableNode.RemoveChild(row)
+                    Next
 
                     ' Add new rows from config
                     For Each row In xmlNode.SelectNodes("Row1")
@@ -130,49 +149,30 @@ Namespace AdobeUtilsNS
         ''' <summary>
         ''' Adds attachments to existing PDF in place
         ''' </summary>
-        ''' <param name="pPdfPath"></param>
-        ''' <param name="pAttList">Listă de tipul List(Of AttachementModel) </param>
-        ''' <returns></returns>
-        Private Shared Function AddAttachmentsInPlace(pPdfPath As String, pAttList As List(Of Object)) As Boolean
+        Private Shared Function AddAttachmentsInPlace(pPdfPath As String, pAttList As List(Of AttachmentModel)) As Boolean
             If pAttList Is Nothing OrElse pAttList.Count = 0 Then
                 Return True
-                Exit Function
             End If
 
             Dim pdfBytes As Byte() = File.ReadAllBytes(pPdfPath)
             Dim output As New MemoryStream()
 
             Dim reader As New PdfReader(pdfBytes)
-            Dim stamper As New PdfStamper(reader, output)
+            Dim stamper As New PdfStamper(reader, output, "\0", True)
 
-            For Each att As Object In pAttList
+            For Each att As AttachmentModel In pAttList
                 If att Is Nothing Then Continue For
+                If att.IsDeleted Then Continue For
+                If att.FileData Is Nothing OrElse att.FileData.Length = 0 Then Continue For
 
-                Dim t As Type = att.GetType()
-
-                Dim propFilePath = t.GetProperty("FilePath")
-                Dim propFileData = t.GetProperty("FileData")
-                Dim propIsDeleted = t.GetProperty("IsDeleted")
-
-                If propFilePath Is Nothing OrElse propFileData Is Nothing OrElse propIsDeleted Is Nothing Then
-                    Continue For
-                End If
-
-                Dim filePath As String = CStr(propFilePath.GetValue(att))
-                Dim fileData As Byte() = CType(propFileData.GetValue(att), Byte())
-                Dim isDeleted As Boolean = CBool(propIsDeleted.GetValue(att))
-
-                If isDeleted Then Continue For
-                If fileData Is Nothing OrElse fileData.Length = 0 Then Continue For
-
-                Dim pName As String = Path.GetFileName(filePath)
+                Dim pName As String = Path.GetFileName(att.FileName)
 
                 Dim fileSpec As PdfFileSpecification =
                     PdfFileSpecification.FileEmbedded(
                         stamper.Writer,
-                        filePath,
+                        att.FileName,
                         pName,
-                        fileData
+                        att.FileData
                     )
 
                 stamper.AddFileAttachment(pName, fileSpec)
@@ -358,4 +358,3 @@ Namespace AdobeUtilsNS
         End Sub
     End Class
 End Namespace
-

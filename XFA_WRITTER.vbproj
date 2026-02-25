@@ -4,17 +4,22 @@
     <OutputType>Exe</OutputType>
     <RootNamespace></RootNamespace>
 	<AssemblyName>XFA_WRITTER</AssemblyName>
-    <TargetFramework>net8.0-windows10.0.17763.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>True</UseWindowsForms>
     <MyType>WindowsFormsWithCustomSubMain</MyType>
     <StartupObject></StartupObject>
     <NuGetAudit>False</NuGetAudit>
     <ApplicationManifest>My Project\app.manifest</ApplicationManifest>
-    <Platforms>AnyCPU;x86</Platforms>
+	  <Platforms>AnyCPU;x86</Platforms>
     <ApplicationIcon>Gemini_Generated_Image_51otpx51otpx51ot.ico</ApplicationIcon>
   </PropertyGroup>
 
-  <ItemGroup>
+	<PropertyGroup>
+		<FileVersion>2.0.0.0</FileVersion>
+		<AssemblyVersion>2.0.0.0</AssemblyVersion>
+	</PropertyGroup>
+
+	<ItemGroup>
     <Content Include="Gemini_Generated_Image_51otpx51otpx51ot.ico" />
   </ItemGroup>
 
