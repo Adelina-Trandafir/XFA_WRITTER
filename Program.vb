@@ -10,24 +10,25 @@ Module Program
     Sub Main(args As String())
         Dim xmlPath As String
         Dim outputPdfPath As String
+        Dim docType As String
         Dim templatePath As String
 
 #If DEBUG Then
-        ' Debug mode: use hardcoded paths for convenience
         xmlPath = "C:\AVACONT\14\DDF_NR_1_REV_1.xml"
         outputPdfPath = "c:\avacont\output.pdf"
+        docType = "DDF"
 #Else
-        ' Validate arguments: XFA_WRITTER.exe "data.xml" "output.pdf"
-        If args.Length < 2 Then
+        If args.Length < 3 Then
             MessageBox.Show(
                 $"{APP_TITLE} v{APP_VERSION} - Unelte pentru completare formulare XFA cu atașamente" & vbCrLf & vbCrLf &
                 "Utilizare:" & vbCrLf &
-                "  XFA_WRITTER.exe <fisier_date.xml> <fisier_output.pdf>" & vbCrLf & vbCrLf &
+                "  XFA_WRITTER.exe <fisier_date.xml> <fisier_output.pdf> <tip_document>" & vbCrLf & vbCrLf &
                 "Parametri:" & vbCrLf &
-                "  fisier_date.xml  - Fișierul XML cu datele de completat (poate conține și atașamente base64)" & vbCrLf &
-                "  fisier_output.pdf - Calea fișierului PDF rezultat" & vbCrLf & vbCrLf &
+                "  fisier_date.xml   - Fișierul XML cu datele de completat (poate conține și atașamente base64)" & vbCrLf &
+                "  fisier_output.pdf - Calea fișierului PDF rezultat" & vbCrLf &
+                "  tip_document      - Tipul documentului: DDF, ORD" & vbCrLf & vbCrLf &
                 "Exemplu:" & vbCrLf &
-                "  XFA_WRITTER.exe ""c:\avacont\data.xml"" ""c:\avacont\output.pdf""",
+                "  XFA_WRITTER.exe ""c:\avacont\data.xml"" ""c:\avacont\output.pdf"" DDF",
                 $"{APP_TITLE} v{APP_VERSION}",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information
@@ -38,31 +39,27 @@ Module Program
 
         xmlPath = args(0)
         outputPdfPath = args(1)
+        docType = args(2).ToUpper()
 #End If
 
         Try
-            ' Validate input file exists
             If Not File.Exists(xmlPath) Then
                 Throw New Exception($"Fișierul XML nu a fost găsit: {xmlPath}")
             End If
 
-            ' Step 1: Parse XML - separate data from attachments
+            ' Step 1: Separă datele de atașamente
             Dim attachments As List(Of AttachmentModel) = Nothing
             Dim cleanXmlPath As String = Nothing
             ParseInputXml(xmlPath, attachments, cleanXmlPath)
 
-            ' Step 2: Download/cache template from mfinante.gov.ro
-#If DEBUG Then
-            templatePath = TemplateDownloader.GetTemplatePath() '"C:\AVACONT\cache_ddf\DocumentFundamentare_cu_xml.pdf"
-#Else
-            templatePath  = TemplateDownloader.GetTemplatePath()
+            ' Step 2: Descarcă/cache template din Flask pe baza tipului de document
+            templatePath = TemplateDownloader.GetTemplatePath(docType)
 
-#End If
-            ' Step 3: Process XFA and embed attachments
+            ' Step 3: Procesează XFA și embed atașamente
             Dim cPDF As New AdobeUtilsNS.AdobeUtils(attachments)
             cPDF.ProcessXfa(templatePath, outputPdfPath, cleanXmlPath)
 
-            ' Cleanup temp XML if created
+            ' Cleanup XML temporar
             If cleanXmlPath <> xmlPath AndAlso File.Exists(cleanXmlPath) Then
                 Try
                     File.Delete(cleanXmlPath)
@@ -83,16 +80,12 @@ Module Program
         End Try
     End Sub
 
-    ''' <summary>
-    ''' Parses input XML: extracts attachments (base64) and produces a clean XML (without Attachments node) for XFA.
-    ''' </summary>
     Private Sub ParseInputXml(xmlPath As String, ByRef attachments As List(Of AttachmentModel), ByRef cleanXmlPath As String)
         attachments = New List(Of AttachmentModel)
 
         Dim doc As New XmlDocument()
         doc.Load(xmlPath)
 
-        ' Find and process Attachments node
         Dim attachmentsNode As XmlNode = doc.SelectSingleNode("//Attachments")
 
         If attachmentsNode IsNot Nothing Then
@@ -107,7 +100,7 @@ Module Program
                     If Not String.IsNullOrEmpty(fileName) AndAlso Not String.IsNullOrEmpty(base64Data) Then
                         Try
                             attachments.Add(New AttachmentModel() With {
-                                .fileName = fileName,
+                                .FileName = fileName,
                                 .FileData = Convert.FromBase64String(base64Data),
                                 .IsDeleted = False
                             })
@@ -118,14 +111,14 @@ Module Program
                 End If
             Next
 
-            ' Remove Attachments node from XML for clean XFA data
+            ' Scoate nodul Attachments din XML înainte de a-l trimite la XFA
             attachmentsNode.ParentNode.RemoveChild(attachmentsNode)
 
-            ' Save clean XML to temp file
+            ' Salvează XML curat în temp
             cleanXmlPath = Path.Combine(Path.GetTempPath(), $"xfa_data_{Guid.NewGuid():N}.xml")
             doc.Save(cleanXmlPath)
         Else
-            ' No attachments - use original XML as-is
+            ' Fără atașamente - folosește XML-ul original ca atare
             cleanXmlPath = xmlPath
         End If
     End Sub

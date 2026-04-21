@@ -1,16 +1,12 @@
 ﻿Imports System.IO
 Imports System.Net.Http
 
-''' <summary>
-''' Downloads and caches the DocumentFundamentare PDF template from the local Flask server.
-''' </summary>
 <System.Runtime.Versioning.SupportedOSPlatform("windows")>
 Public Class TemplateDownloader
-    ''' <summary>
-    ''' Returns local path to the cached template PDF.
-    ''' Downloads from server if not already cached (or if filename changed).
-    ''' </summary>
-    Public Shared Function GetTemplatePath() As String
+
+    Public Shared Function GetTemplatePath(docType As String) As String
+        Dim templateUrl As String = GetUrlForDocType(docType)
+
         If Not Directory.Exists(CACHE_DIR) Then
             Directory.CreateDirectory(CACHE_DIR)
         End If
@@ -19,49 +15,57 @@ Public Class TemplateDownloader
             client.Timeout = TimeSpan.FromSeconds(60)
             client.DefaultRequestHeaders.Add("X-API-KEY", API_KEY)
 
-            ' HEAD request - ia doar numele fișierului fără a descărca
-            Dim headRequest As New HttpRequestMessage(HttpMethod.Head, BASE_URL & DDF_URL)
+            Dim headRequest As New HttpRequestMessage(HttpMethod.Head, BASE_URL & templateUrl)
             Dim headResponse As HttpResponseMessage
 
             Try
                 headResponse = client.SendAsync(headRequest).Result
                 headResponse.EnsureSuccessStatusCode()
             Catch ex As Exception
-                ' Dacă HEAD eșuează, încearcă GET direct
-                Return DownloadFull(client)
+                Return DownloadFull(client, templateUrl, docType)
             End Try
 
-            ' Extrage filename din Content-Disposition
             Dim remoteFileName As String = GetFileNameFromResponse(headResponse)
 
             If String.IsNullOrEmpty(remoteFileName) Then
-                Return DownloadFull(client)
+                Return DownloadFull(client, templateUrl, docType)
             End If
 
-            ' Verifică dacă există deja în cache
             Dim localPath As String = Path.Combine(CACHE_DIR, remoteFileName)
             If File.Exists(localPath) Then
                 Return localPath
             End If
 
-            ' Nu există - descarcă
-            Return DownloadFull(client)
+            Return DownloadFull(client, templateUrl, docType)
         End Using
     End Function
 
-    Private Shared Function DownloadFull(client As HttpClient) As String
+    ''' <summary>
+    ''' Mapează docType → URL din Configs.
+    ''' Adaugă aici orice tip nou de document.
+    ''' </summary>
+    Private Shared Function GetUrlForDocType(docType As String) As String
+        Select Case docType.ToUpper()
+            Case "DDF" : Return DDF_URL
+            Case "ORD" : Return ORD_URL
+            Case Else
+                Throw New Exception($"Tip document necunoscut: '{docType}'. Tipuri acceptate: DDF, ORD.")
+        End Select
+    End Function
+
+    Private Shared Function DownloadFull(client As HttpClient, templateUrl As String, docType As String) As String
         Dim response As HttpResponseMessage
 
         Try
-            response = client.GetAsync(DDF_URL).Result
+            response = client.GetAsync(BASE_URL & templateUrl).Result
             response.EnsureSuccessStatusCode()
         Catch ex As Exception
-            Throw New Exception($"Nu s-a putut descărca macheta de pe server: {ex.Message}")
+            Throw New Exception($"Nu s-a putut descărca macheta {docType} de pe server: {ex.Message}")
         End Try
 
         Dim remoteFileName As String = GetFileNameFromResponse(response)
         If String.IsNullOrEmpty(remoteFileName) Then
-            remoteFileName = $"DDF_template_{DateTime.Now:yyyyMMdd}.pdf"
+            remoteFileName = $"{docType}_template_{DateTime.Now:yyyyMMdd}.pdf"
         End If
 
         Dim localPath As String = Path.Combine(CACHE_DIR, remoteFileName)
