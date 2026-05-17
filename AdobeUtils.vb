@@ -72,6 +72,7 @@ Namespace AdobeUtilsNS
         ''' <param name="configXmlPath"> MUST MATCH the XFA field names exactly!</param>
         ''' <returns></returns>
         Private Shared Function ModifyXfaFromXml(inputPdfPath As String, outputPdfPath As String, configXmlPath As String) As String
+            Logger.Log("INFO", $"ModifyXfaFromXml — inputPdf: {inputPdfPath}, outputPdf: {outputPdfPath}, dataXml: {configXmlPath}")
             Dim reader As New PdfReader(inputPdfPath)
             Dim stamper As New PdfStamper(reader, New FileStream(outputPdfPath, FileMode.Create), "\0", True)
             Try
@@ -83,15 +84,17 @@ Namespace AdobeUtilsNS
                 configDoc.Load(configXmlPath)
 
                 ' Process all nodes recursively
-                ProcessXmlNodes(configDoc.DocumentElement, domDoc)
+                ProcessXmlNodes(configDoc.DocumentElement, domDoc, Nothing)
 
                 ' Write back XFA
                 xfaForm.DomDocument = domDoc
                 xfaForm.Changed = True
 
+                Logger.Log("INFO", "ModifyXfaFromXml: OK")
                 Return "OK"
 
             Catch ex As Exception
+                Logger.Log("ERROR", $"ModifyXfaFromXml: {ex.Message}")
                 Return $"Eroare la modificarea XFA: {ex.Message}"
             Finally
                 stamper?.Close()
@@ -99,58 +102,111 @@ Namespace AdobeUtilsNS
             End Try
         End Function
 
+        ' Subform names that can repeat in the PDF DOM (cloned when XML has more instances than PDF template)
+        Private Shared ReadOnly RepeatingSubforms As New HashSet(Of String)({"SubformInf"})
+
         ''' <summary>
-        ''' Recursively processes XML nodes and applies to XFA PDF
+        ''' Recursively processes XML nodes and applies to XFA PDF.
+        ''' pdfContextNode scopes XPath searches to a specific DOM subtree (used for repeating subforms).
         ''' </summary>
-        Private Shared Sub ProcessXmlNodes(xmlNode As System.Xml.XmlNode, pdfDoc As System.Xml.XmlDocument)
+        Private Shared Sub ProcessXmlNodes(xmlNode As XmlNode, pdfDoc As XmlDocument, pdfContextNode As XmlNode)
+            Dim searchRoot As XmlNode = If(pdfContextNode IsNot Nothing, pdfContextNode, CType(pdfDoc, XmlNode))
+
             ' Check if this node is a table (has Row1 children)
             Dim isTable = xmlNode.SelectSingleNode("Row1") IsNot Nothing
 
             If isTable Then
-                ' Handle table: add rows
                 Dim tableName = xmlNode.Name
-                Dim pdfTableNode = pdfDoc.SelectSingleNode($"//{tableName}")
+                Dim pdfTableNode = searchRoot.SelectSingleNode($".//{tableName}")
+                Dim found = pdfTableNode IsNot Nothing
 
-                If pdfTableNode IsNot Nothing Then
-                    ' Remove existing rows (keep header/footer)
+                Dim rowsRemoved = 0
+                Dim rowsAdded = 0
+
+                If found Then
                     Dim existingRows = pdfTableNode.SelectNodes("Row1")
+                    rowsRemoved = existingRows.Count
                     For Each row In existingRows
                         pdfTableNode.RemoveChild(row)
                     Next
 
-                    ' Add new rows from config
                     For Each row In xmlNode.SelectNodes("Row1")
-                        Dim newRow As System.Xml.XmlElement = pdfDoc.CreateElement("Row1")
+                        Dim newRow As XmlElement = pdfDoc.CreateElement("Row1")
                         For Each cell In row.ChildNodes
-                            Dim cellValue = CStr(cell.InnerText)
-                            newRow.AppendChild(CreateElement(pdfDoc, cell.Name, cellValue))
+                            newRow.AppendChild(CreateElement(pdfDoc, cell.Name, CStr(cell.InnerText)))
                         Next
                         pdfTableNode.AppendChild(newRow)
+                        rowsAdded += 1
                     Next
                 End If
 
+                If found Then
+                    Logger.Log("DEBUG", $"ProcessXmlNodes: TABLE '{tableName}' — found in DOM: YES, rows removed: {rowsRemoved}, rows added: {rowsAdded}")
+                Else
+                    Logger.Log("WARN", $"ProcessXmlNodes: TABLE '{tableName}' — found in DOM: NO (node not found)")
+                End If
+
             Else
-                ' Handle regular fields
-                For Each childNode In xmlNode.ChildNodes
+                For Each childNode As XmlNode In xmlNode.ChildNodes
                     Dim nodeName = childNode.Name
                     Dim nodeValue = CStr(childNode.InnerText)
 
-                    ' If node has children and is not empty, recurse
                     If childNode.HasChildNodes AndAlso childNode.SelectNodes("*").Count > 0 Then
-                        ProcessXmlNodes(childNode, pdfDoc)
+                        If RepeatingSubforms.Contains(nodeName) Then
+                            ' Resolve (or clone) the correct PDF instance for this XML occurrence
+                            Dim idx = GetChildIndex(childNode)
+                            Dim allInstances = pdfDoc.SelectNodes($"//{nodeName}")
+                            Dim targetPdfNode As XmlNode
+
+                            If idx < allInstances.Count Then
+                                targetPdfNode = allInstances(idx)
+                                Logger.Log("DEBUG", $"ProcessXmlNodes: REPEATING '{nodeName}' idx={idx} — reusing existing instance")
+                            Else
+                                Dim lastInstance = allInstances(allInstances.Count - 1)
+                                targetPdfNode = lastInstance.CloneNode(True)
+                                lastInstance.ParentNode.AppendChild(targetPdfNode)
+                                Logger.Log("DEBUG", $"ProcessXmlNodes: REPEATING '{nodeName}' idx={idx} — cloned new instance (was {allInstances.Count})")
+                            End If
+
+                            ProcessXmlNodes(childNode, pdfDoc, targetPdfNode)
+                        Else
+                            Logger.Log("DEBUG", $"ProcessXmlNodes: RECURSE '{nodeName}'")
+                            ProcessXmlNodes(childNode, pdfDoc, pdfContextNode)
+                        End If
                     ElseIf Not String.IsNullOrWhiteSpace(nodeValue) Then
-                        ' Set leaf node value in PDF
-                        SetNodeValue(pdfDoc, $"//{nodeName}", nodeValue)
+                        Dim displayValue = If(nodeValue.Length > 80, nodeValue.Substring(0, 80) & "…", nodeValue)
+                        Logger.Log("DEBUG", $"ProcessXmlNodes: FIELD '{nodeName}' — value: '{displayValue}'")
+                        Dim fieldXPath = $".//{nodeName}"
+                        Dim fieldNode = searchRoot.SelectSingleNode(fieldXPath)
+                        If fieldNode IsNot Nothing Then
+                            fieldNode.InnerText = nodeValue
+                        Else
+                            Logger.Log("WARN", $"ProcessXmlNodes: FIELD '{nodeName}' — not found in DOM (context: {If(pdfContextNode IsNot Nothing, pdfContextNode.Name, "root")})")
+                        End If
                     End If
                 Next
             End If
         End Sub
 
         ''' <summary>
+        ''' Returns how many preceding siblings share the same node name (0-based index of this occurrence).
+        ''' </summary>
+        Private Shared Function GetChildIndex(node As XmlNode) As Integer
+            Dim count As Integer = 0
+            Dim sibling = node.PreviousSibling
+            Do While sibling IsNot Nothing
+                If sibling.Name = node.Name Then count += 1
+                sibling = sibling.PreviousSibling
+            Loop
+            Return count
+        End Function
+
+        ''' <summary>
         ''' Adds attachments to existing PDF in place
         ''' </summary>
         Private Shared Function AddAttachmentsInPlace(pPdfPath As String, pAttList As List(Of AttachmentModel)) As Boolean
             If pAttList Is Nothing OrElse pAttList.Count = 0 Then
+                Logger.Log("INFO", "AddAttachmentsInPlace: 0 atașamente — skip")
                 Return True
             End If
 
@@ -160,6 +216,7 @@ Namespace AdobeUtilsNS
             Dim reader As New PdfReader(pdfBytes)
             Dim stamper As New PdfStamper(reader, output, "\0", True)
 
+            Dim addedCount = 0
             For Each att As AttachmentModel In pAttList
                 If att Is Nothing Then Continue For
                 If att.IsDeleted Then Continue For
@@ -176,6 +233,7 @@ Namespace AdobeUtilsNS
                     )
 
                 stamper.AddFileAttachment(pName, fileSpec)
+                addedCount += 1
             Next
 
             stamper.Close()
@@ -183,6 +241,7 @@ Namespace AdobeUtilsNS
 
             File.WriteAllBytes(pPdfPath, output.ToArray())
 
+            Logger.Log("INFO", $"AddAttachmentsInPlace: {addedCount} atașamente adăugate")
             Return True
         End Function
 
@@ -349,12 +408,5 @@ Namespace AdobeUtilsNS
             elem.InnerText = value
             Return elem
         End Function
-
-        Private Shared Sub SetNodeValue(doc As XmlDocument, xpath As String, value As String)
-            Dim node = doc.SelectSingleNode(xpath)
-            If node IsNot Nothing Then
-                node.InnerText = value
-            End If
-        End Sub
     End Class
 End Namespace

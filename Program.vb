@@ -14,9 +14,11 @@ Module Program
         Dim templatePath As String
 
 #If DEBUG Then
-        xmlPath = "C:\AVACONT\14\DDF_NR_1_REV_1.xml"
+        xmlPath = "C:\AVACONT\ORD_TEST.xml"
         outputPdfPath = "c:\avacont\output.pdf"
-        docType = "DDF"
+        docType = "ORD"
+        Logger.Init(docType)
+        Logger.Log("INFO", $"args (DEBUG) — xmlPath: {xmlPath}, outputPdfPath: {outputPdfPath}, tip: {docType}")
 #Else
         If args.Length < 3 Then
             MessageBox.Show(
@@ -40,6 +42,9 @@ Module Program
         xmlPath = args(0)
         outputPdfPath = args(1)
         docType = args(2).ToUpper()
+        Logger.Init(docType)
+        Logger.Log("INFO", $"args — xmlPath: {xmlPath}, outputPdfPath: {outputPdfPath}, tip: {docType}")
+
 #End If
 
         Try
@@ -48,14 +53,19 @@ Module Program
             End If
 
             ' Step 1: Separă datele de atașamente
+            Logger.LogSection("ParseInputXml")
             Dim attachments As List(Of AttachmentModel) = Nothing
             Dim cleanXmlPath As String = Nothing
             ParseInputXml(xmlPath, attachments, cleanXmlPath)
+            Logger.Log("INFO", $"ParseInputXml — attachments: {attachments.Count}, cleanXml: {cleanXmlPath}")
 
             ' Step 2: Descarcă/cache template din Flask pe baza tipului de document
+            Logger.LogSection("GetTemplatePath")
             templatePath = TemplateDownloader.GetTemplatePath(docType)
+            Logger.Log("INFO", $"GetTemplatePath — templatePath: {templatePath}")
 
             ' Step 3: Procesează XFA și embed atașamente
+            Logger.LogSection("ProcessXfa")
             Dim cPDF As New AdobeUtilsNS.AdobeUtils(attachments)
             cPDF.ProcessXfa(templatePath, outputPdfPath, cleanXmlPath)
 
@@ -67,15 +77,18 @@ Module Program
                 End Try
             End If
 
+            Logger.Log("INFO", "Exit(0)")
             Environment.Exit(0)
 
         Catch ex As Exception
+            Logger.Log("ERROR", $"Exception: {ex.Message}{vbCrLf}{ex.StackTrace}")
             MessageBox.Show(
                 $"Eroare: {ex.Message}",
                 $"{APP_TITLE} v{APP_VERSION} - Eroare",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error
             )
+            Logger.Log("INFO", "Exit(1)")
             Environment.Exit(1)
         End Try
     End Sub
